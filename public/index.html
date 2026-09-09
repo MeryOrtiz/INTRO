@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Server · Panel de control</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◈</span>
+      <div>
+        <h1>Server</h1>
+        <p id="mw-info" class="brand-sub">conectando…</p>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <span id="stream-state" class="pill pill-idle"><i class="dot"></i>conectando</span>
+      <button id="theme-toggle" class="icon-btn" title="Cambiar tema">◐</button>
+    </div>
+  </header>
+
+  <main class="app">
+
+    <section class="kpis" id="kpis"></section>
+
+    <div class="grid">
+
+      <!-- QUIÉN ESTÁ CONECTADO -->
+      <section class="card col-main">
+        <div class="card-head">
+          <div>
+            <h2>Conectados</h2>
+            <p class="card-sub">quién está en línea y qué está enviando</p>
+          </div>
+          <span id="node-count" class="tag">0</span>
+        </div>
+        <ul id="connected" class="connected"></ul>
+      </section>
+
+      <!-- PANEL DE ENVÍO -->
+      <section class="card col-side">
+        <div class="card-head">
+          <div>
+            <h2>Enviar mensaje</h2>
+            <p class="card-sub">a la URL que indiques</p>
+          </div>
+        </div>
+
+        <form id="send-form">
+          <div class="field">
+            <label for="msg-url">URL del servidor de tu compañero</label>
+            <div class="field-row">
+              <input id="msg-url" type="text" placeholder="https://algo.ngrok-free.dev" autocomplete="off" required />
+              <button type="button" id="probe-btn" class="btn btn-ghost btn-sm" title="Ver qué hay en esa URL">Probar</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="msg-from">name · quién envía</label>
+            <input id="msg-from" type="text" placeholder="tu nombre" autocomplete="off" maxlength="40" required />
+          </div>
+
+          <div class="field">
+            <label for="msg-text">message · el mensaje</label>
+            <input id="msg-text" type="text" placeholder="Escribe el mensaje…" autocomplete="off" required />
+          </div>
+
+          <button type="submit" class="btn btn-primary">Enviar</button>
+        </form>
+
+        <p class="help">Pega la URL de tu compañero y le llega el cuerpo que todos aceptamos: <code>{ "name", "message" }</code>. Si la URL no lleva ruta, se buscan las habituales (<code>/inbox</code>, <code>/mensajes</code>, <code>/send-message</code>…) y, si el destino es una página web, se lee su propio JavaScript para averiguar en qué ruta escucha. Si ya sabes la ruta, escríbela y se usa esa: <code>https://su-url.ngrok-free.dev/mensajes</code>. El botón <b>Probar</b> te dice qué hay en la URL antes de enviar.</p>
+      </section>
+
+      <!-- FLUJO DE MENSAJES -->
+      <section class="card col-full">
+        <div class="card-head">
+          <div>
+            <h2>Mensajes en el sistema</h2>
+            <p class="card-sub">quién le escribe a quién, en orden de llegada</p>
+          </div>
+          <div class="filters">
+            <button class="mfilter chip active" data-from="">Todos</button>
+          </div>
+        </div>
+        <ul id="messages-list" class="feed feed-wide"></ul>
+      </section>
+
+      <!-- LOG DE EVENTOS -->
+      <section class="card col-full">
+        <div class="card-head">
+          <div>
+            <h2>Registro de eventos</h2>
+            <p class="card-sub">observabilidad en vivo</p>
+          </div>
+        </div>
+        <ul id="logs-list" class="logs"></ul>
+      </section>
+
+    </div>
+  </main>
+
+  <div id="toasts" class="toasts"></div>
+
+  <script src="/client.js"></script>
+</body>
+</html>
