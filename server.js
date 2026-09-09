@@ -439,16 +439,38 @@ function recordMessage(msg) {
 // hijo -> padre
 app.post("/send-message/:name", (req, res) => {
     const entry = registry.get(normalize(req.params.name))
-    if (!entry) return res.status(404).json({ error: "server not registered" })
 
     const text = req.body?.message
     if (typeof text !== "string" || !text.trim()) {
         return res.status(400).json({ error: "El campo 'message' es obligatorio" })
     }
 
+    // Quien no esta registrado tambien puede escribir. Varios equipos mandan
+    // el emisor en la ruta (POST /send-message/pepe con { message }) sin darse
+    // de alta antes; contestarles 404 hacia que su mensaje se perdiera aunque
+    // estuviera perfectamente formado.
+    if (!entry) {
+        const firma = String(req.params.name || "").trim().slice(0, 40)
+        if (!firma) return res.status(400).json({ error: "Falta el nombre de quien envia" })
+
+        const externo = recordMessage({
+            id: ++messageSeq,
+            from: firma,
+            to: "server",
+            server: firma,
+            message: text,
+            timestamp: Date.now(),
+            external: true
+        })
+
+        metrics.messagesIn++
+        log("success", "message-in", { from: firma, via: "externo", message: text })
+        return res.json({ status: "ok", received: true, id: externo.id, from: firma })
+    }
+
     // El hijo puede firmar el mensaje con el nombre que escribio el usuario;
     // si no manda firma, vale su nombre registrado.
-    const signature = String(req.body?.from || "").trim().slice(0, 40) || entry.display
+    const signature = String(req.body?.from || req.body?.name || "").trim().slice(0, 40) || entry.display
 
     const msg = recordMessage({
         id: ++messageSeq,
@@ -666,14 +688,22 @@ function looksLikeHtml(data) {
 
 // Rutas donde suele escucharse un mensaje. No hay una sola convencion: cada
 // equipo llamo distinto a su endpoint, asi que si la URL no trae ruta se
-// prueban todas hasta que una acepte el cuerpo { name, message }.
+// prueban todas hasta que una acepte el mensaje.
 const RUTAS_ENTREGA = [
     "/inbox", "/send-message", "/mensaje", "/mensajes", "/messages",
     "/api/mensajes", "/api/messages", "/api/send-message", "/api/inbox",
     "/enviar", "/send", "/chat", "/"
 ]
 
-function deliveryTargets(rawUrl) {
+// Varios proyectos (el nuestro incluido) no llevan el emisor en el cuerpo sino
+// en la ruta: POST /send-message/meryh con { message }. Si solo probaramos las
+// rutas sueltas, esos destinos contestan 404 y parece que no hay a donde
+// escribir, cuando si lo hay.
+const RUTAS_CON_NOMBRE = [
+    "/send-message", "/mensaje", "/message", "/messages", "/inbox", "/enviar"
+]
+
+function deliveryTargets(rawUrl, name) {
     const parsed = new URL(rawUrl)
 
     // Si quien envia escribio una ruta concreta, se respeta tal cual
@@ -681,7 +711,25 @@ function deliveryTargets(rawUrl) {
         return [parsed.toString().replace(new RegExp("/+$"), "")]
     }
 
-    return RUTAS_ENTREGA.map(ruta => ruta === "/" ? parsed.origin : parsed.origin + ruta)
+    const firma = encodeURIComponent(name)
+    const rutas = []
+
+    // Se alternan: primero el buzon directo, enseguida la variante con nombre
+    // (es la que usa la mayoria en clase), y despues el resto.
+    rutas.push(parsed.origin + "/inbox")
+    rutas.push(parsed.origin + "/send-message/" + firma)
+
+    for (const ruta of RUTAS_CON_NOMBRE) {
+        const con = parsed.origin + ruta + "/" + firma
+        if (!rutas.includes(con)) rutas.push(con)
+    }
+
+    for (const ruta of RUTAS_ENTREGA) {
+        const sin = ruta === "/" ? parsed.origin : parsed.origin + ruta
+        if (!rutas.includes(sin)) rutas.push(sin)
+    }
+
+    return rutas
 }
 
 // --------------------------------------------------------------------------
@@ -861,7 +909,7 @@ app.post("/send-to-url", async (req, res) => {
     let descubiertas = []
 
     try {
-        for (const destination of deliveryTargets(u.url)) {
+        for (const destination of deliveryTargets(u.url, from)) {
             const exito = await intentar(destination)
             if (exito) return entregado(exito)
         }

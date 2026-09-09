@@ -72,7 +72,7 @@
           <button type="submit" class="btn btn-primary">Enviar</button>
         </form>
 
-        <p class="help">Pega la URL de tu compañero y le llega el cuerpo que todos aceptamos: <code>{ "name", "message" }</code>. Si la URL no lleva ruta, se buscan las habituales (<code>/inbox</code>, <code>/mensajes</code>, <code>/send-message</code>…) y, si el destino es una página web, se lee su propio JavaScript para averiguar en qué ruta escucha. Si ya sabes la ruta, escríbela y se usa esa: <code>https://su-url.ngrok-free.dev/mensajes</code>. El botón <b>Probar</b> te dice qué hay en la URL antes de enviar.</p>
+        <p class="help">Pega la URL de tu compañero y le llega el cuerpo que todos aceptamos: <code>{ "name", "message" }</code>. Si la URL no lleva ruta, se busca sola: primero <code>/send-message/tu-nombre</code> (lo que usa la mayoría en clase), luego <code>/inbox</code>, <code>/mensajes</code> y demás, y si el destino es una página web se lee su JavaScript para averiguar dónde escucha. Si ya sabes la ruta, escríbela y se usa esa: <code>https://su-url.ngrok-free.dev/mensajes</code>. El botón <b>Probar</b> te dice qué hay en la URL antes de enviar.</p>
       </section>
 
       <!-- FLUJO DE MENSAJES -->
