@@ -1,0 +1,222 @@
+* { box-sizing: border-box; }
+
+body {
+    font-family: Arial, sans-serif;
+    background: #1e1e2f;
+    color: #fff;
+    margin: 0;
+    padding: 24px;
+}
+
+h1 { font-size: 22px; margin: 0; }
+h2 { font-size: 14px; margin: 0; text-transform: uppercase; letter-spacing: .08em; color: #8b8ba7; }
+
+header { margin-bottom: 20px; }
+
+.title { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.meta { color: #8b8ba7; font-size: 13px; }
+.label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #8b8ba7; }
+.hint { color: #8b8ba7; font-size: 12px; margin: 4px 0 10px; }
+
+/* El banner es lo que se mira desde el fondo del aula. */
+.banner {
+    margin-top: 12px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-weight: bold;
+    background: #2a2a40;
+    border-left: 5px solid #4cafef;
+}
+.banner.ok      { border-left-color: #4caf7d; background: #21332b; }
+.banner.warn    { border-left-color: #efc84c; background: #33301f; }
+.banner.danger  { border-left-color: #ef4c4c; background: #3a2222; animation: pulse 1s infinite; }
+
+@keyframes pulse { 50% { background: #4a2626; } }
+
+/* -------------------------------------------------------------- algoritmos */
+
+.algos { margin-bottom: 18px; }
+.algo-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+
+button {
+    padding: 8px 14px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    background: #4cafef;
+    color: #fff;
+    font-size: 13px;
+}
+button:hover { filter: brightness(1.1); }
+button:disabled { opacity: .5; cursor: default; }
+
+button.ghost { background: #3a3a55; }
+button.algo { background: #3a3a55; }
+button.algo.active { background: #4cafef; }
+button.danger { background: #ef4c4c; }
+
+.algo-info { font-size: 13px; color: #b8b8d0; display: flex; align-items: center; gap: 10px; }
+
+.pill {
+    background: #3a3a55;
+    border-radius: 20px;
+    padding: 2px 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+}
+.pill.quorum { background: #2f5d45; }
+
+/* -------------------------------------------------------------- contadores */
+
+.counters { display: flex; gap: 14px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+
+.counter {
+    background: #2a2a40;
+    border-radius: 8px;
+    padding: 10px 16px;
+    display: flex;
+    flex-direction: column;
+    min-width: 120px;
+}
+.counter strong { font-size: 20px; }
+.counter span { font-size: 11px; color: #8b8ba7; text-transform: uppercase; letter-spacing: .05em; }
+.counter.dim strong { color: #8b8ba7; }
+.counter #msgTypes { font-size: 12px; font-weight: normal; color: #b8b8d0; }
+
+/* ------------------------------------------------------------------ nodos */
+
+main { display: grid; grid-template-columns: 1fr; gap: 18px; align-items: start; }
+
+.nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+
+.node {
+    background: #2a2a40;
+    border-radius: 10px;
+    padding: 14px;
+    border-top: 4px solid #55556f;
+}
+.node.leader    { border-top-color: #4caf7d; background: #24332c; }
+.node.candidate { border-top-color: #efc84c; }
+.node.paused,
+.node.unreachable { opacity: .45; border-top-color: #ef4c4c; }
+
+.node-head { display: flex; justify-content: space-between; align-items: center; }
+.node-head strong { font-size: 17px; }
+
+.role {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    padding: 2px 8px;
+    border-radius: 20px;
+    background: #3a3a55;
+}
+.role.leader { background: #4caf7d; }
+.role.candidate { background: #efc84c; color: #33301f; }
+
+.node-body { margin: 10px 0; font-size: 12px; color: #b8b8d0; line-height: 1.7; }
+.node-body code { color: #fff; background: #1e1e2f; padding: 1px 5px; border-radius: 3px; }
+
+.node-flags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.flag { font-size: 10px; padding: 2px 7px; border-radius: 4px; background: #ef4c4c; }
+.flag.skew { background: #a24cef; }
+.flag.slow { background: #efc84c; color: #33301f; }
+
+.node-actions { display: flex; gap: 6px; }
+.node-actions button { padding: 5px 10px; font-size: 11px; flex: 1; }
+
+/* ---------------------------------------------------------- herramientas */
+
+.tools { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
+
+.tool { background: #2a2a40; border-radius: 10px; padding: 14px; }
+.tool .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.tool label { font-size: 12px; color: #b8b8d0; }
+.tool input[type="number"] { width: 70px; padding: 6px; border-radius: 4px; border: none; background: #1e1e2f; color: #fff; }
+
+.picker { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.picker label {
+    background: #3a3a55;
+    padding: 5px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.picker label.on { background: #4cafef; color: #fff; }
+
+@media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+    .tools { grid-template-columns: 1fr; }
+}
+
+/* ---------------------------------------------------------------- workers */
+
+/* Las etiquetas que saltan de tarjeta cuando muere el lider. */
+.workers {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+    margin: 10px 0;
+    padding-top: 10px;
+    border-top: 1px solid #3a3a55;
+    min-height: 30px;
+    align-items: center;
+}
+.workers.empty { color: #6b6b85; font-size: 11px; font-style: italic; }
+.workers.stale { opacity: .6; }
+.stale-note { font-size: 10px; color: #ef8c4c; width: 100%; }
+
+.worker {
+    background: #4cafef;
+    color: #fff;
+    font-size: 11px;
+    font-weight: bold;
+    padding: 3px 9px;
+    border-radius: 4px;
+}
+.worker.off { background: #55556f; }
+
+
+/* ------------------------------------------------ conectar por internet */
+
+.connect { margin-top: 18px; }
+.connect code { background: #2a2a40; padding: 2px 6px; border-radius: 4px; word-break: break-all; }
+.connect .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.connect input {
+    flex: 1 1 260px; min-width: 0; padding: 8px 10px; border-radius: 6px;
+    border: 1px solid #3a3a55; background: #1e1e2e; color: inherit; font: inherit;
+}
+button.small { padding: 3px 10px; font-size: 12px; }
+.peer-list { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; }
+.peer-list li { padding: 5px 0; border-top: 1px solid #2f2f47; word-break: break-all; }
+.peer-list .ok { color: #4caf7d; }
+.peer-list .bad { color: #ef4c4c; }
+
+
+/* ---- los tres roles ---- */
+.role.gone { background: #4a2b33; color: #e5a9b4; border: 1px solid #7d3f4d; }
+.role-what { margin: 6px 0 2px; font-size: 12px; line-height: 1.45; color: #9aa0b8; }
+
+
+
+/* ---- aviso flotante del panel ---- */
+.toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    max-width: min(560px, calc(100vw - 32px));
+    padding: 11px 16px; border-radius: 9px;
+    background: #24304a; border: 1px solid #3c5480; color: #dbe6f7;
+    font-size: 13px; line-height: 1.45; box-shadow: 0 8px 24px rgba(0,0,0,.45);
+    z-index: 50;
+}
+.toast[hidden] { display: none; }
+
+/* El lider caido se marca fuerte: es lo que dispara la eleccion. */
+.role.gone.lider { background: #7d2733; border-color: #b04455; color: #ffdde2; }
+
+/* La url del coordinador remoto, en segundo plano */
+.node-body .dim { color: #7f86a0; font-size: 12px; word-break: break-all; }
+.node-actions button[disabled] { opacity: .4; cursor: not-allowed; }

@@ -9,27 +9,104 @@
 //   4. Registro por nombre .......... validacion, colisiones, token de dueno
 //   5. Timeout ...................... pulse + sonda activa, estados ALIVE/SUSPECT/DEAD
 //   6. Observabilidad ............... log de eventos, metricas, stream SSE en vivo
+//   7. Eleccion de lider ............ varios PCs con la MISMA URL de ngrok,
+//                                     lider sorteado al azar, solo el lider
+//                                     recibe los mensajes, failover solo
+//                                     (ELECTION_MODE=bully: algoritmo Bully)
 // ============================================================================
 
 const os = require("os")
+const fs = require("fs")
 const net = require("net")
 const path = require("path")
 const { spawn } = require("child_process")
 const express = require("express")
 const axios = require("axios")
 
+const engine = require("./election/engine")
+const faults = require("./election/faults")
+const electionLog = require("./election/logger")
+
 const app = express()
 
 // ============================================================================
-// 3. DISTRIBUCION FISICA REAL - configuracion por variables de entorno
+// 3. DISTRIBUCION FISICA REAL - configuracion por argumentos o entorno
 // ============================================================================
-// node server.js
-// El PUERTO es fijo (3000) para que el tunel de ngrok siempre apunte al mismo
-// sitio: `ngrok http 3000`. El resto (HOST, PUBLIC_URL, TIMEOUT, ADMIN_KEY)
-// si se puede pasar por entorno, asi el mismo codigo corre en Windows,
-// Linux o Mac y en cualquier maquina.
+// node server.js [PUERTO] [ID] [PEERS]
+//
+// Cada coordinador tiene SU PROPIA URL: un tunel de ngrok apunta a un solo
+// server, asi que no hay forma de que dos compartan el mismo enlace.
+//
+//   En tu PC:    node server.js
+//                ngrok http 3000
+//
+// Para unirte al grupo de un companero, basta con UNA URL suya (los demas
+// se aprenden solos con los pings), por argumento o desde el panel:
+//   node server.js 3000 B https://url-de-una-companera.ngrok-free.dev
+//
+// Por defecto el PUERTO es 3000 para que el tunel de ngrok siempre apunte al
+// mismo sitio: `ngrok http 3000`. El resto (HOST, PUBLIC_URL, TIMEOUT,
+// ADMIN_KEY...) se puede pasar por entorno, asi el mismo codigo corre en
+// Windows, Linux o Mac y en cualquier maquina.
 
-const PORT = 3000
+const PORT = Number(process.argv[2] || process.env.PORT || 3000)
+
+const splitUrls = value => String(value || "")
+    .split(",")
+    .map(url => url.trim().replace(/\/+$/, ""))
+    .filter(Boolean)
+
+// URLs de otros servers para unirse a su grupo. No hace
+// falta ponerlas todas: cada server aprende a los demas.
+const PEERS = splitUrls(process.argv[4] || process.env.PEERS)
+
+// Direcciones por las que se me puede hablar directo en la red local.
+// Se detectan solas; DIRECT_URL las fija a mano si la deteccion no sirve.
+function lanUrls(port) {
+    const ips = Object.values(os.networkInterfaces()).flat()
+        .filter(i => i && i.family === "IPv4" && !i.internal)
+        .filter(i => !i.address.startsWith("169.254."))   // sin red (autoconfiguradas): nadie las alcanza
+        .map(i => `http://${i.address}:${port}`)
+    return [...ips, `http://localhost:${port}`]
+}
+
+// Nombre del coordinador de este PC. Se elige en el panel (en localhost) y
+// se guarda en un archivo para que no cambie al reiniciar.
+const ID_FILE = path.join(__dirname, `.coordinador-${PORT}.json`)
+
+function savedNodeId() {
+    try {
+        return JSON.parse(fs.readFileSync(ID_FILE, "utf8")).id || null
+    } catch {
+        return null
+    }
+}
+
+// El nombre del coordinador va SIEMPRE en mayuscula, venga por argumento,
+// por entorno, guardado o elegido al arrancar. Bully ya comparaba sin
+// distinguir mayusculas ("m" y "M" pesan igual), asi que esto no cambia quien
+// manda: solo evita ver una "m" suelta entre una "B" y una "C".
+function enMayuscula(id) {
+    return String(id || "").trim().toUpperCase()
+}
+
+function nodeIdentity() {
+    if (process.argv[3]) return { id: enMayuscula(process.argv[3]), source: "argumento" }
+    if (process.env.NODE_ID) return { id: enMayuscula(process.env.NODE_ID), source: "entorno" }
+    const saved = savedNodeId()
+    if (saved) return { id: enMayuscula(saved), source: "guardado" }
+    return { id: enMayuscula(`${os.hostname()}-${PORT}`), source: "automatico" }
+}
+
+const NODE_IDENTITY = nodeIdentity()
+
+// BULLY es el unico algoritmo: es el de la guia de clase y el que expone
+// los tres endpoints del contrato (/election/ping, /election/state y
+// /election/message).
+//
+// Cada coordinador tiene SU PROPIA URL. Un tunel de ngrok apunta a un solo
+// server, asi que no hay forma de que varios compartan el mismo enlace.
+const ELECTION_MODE = process.env.ELECTION === "off" ? "off" : "bully"
 
 const config = {
     port: PORT,
@@ -41,18 +118,35 @@ const config = {
     deadRetention: Number(process.env.DEAD_RETENTION || 60000),
     adminKey: process.env.ADMIN_KEY || "admin",
     childHost: process.env.CHILD_HOST || "localhost", // host con el que se registran los hijos lanzados
-    basePort: Number(process.env.BASE_PORT || 4000)   // primer puerto que se prueba al lanzar
+    basePort: Number(process.env.BASE_PORT || 4000),  // primer puerto que se prueba al lanzar
+
+    // 7. ELECCION DE LIDER
+    election: {
+        mode: ELECTION_MODE,                 // bully | off
+        enabled: ELECTION_MODE !== "off",
+        // Cada PC es un server distinto: el nombre elegido en el panel o, si
+        // aun no hay, su nombre de equipo + puerto
+        id: NODE_IDENTITY.id,
+        idSource: NODE_IDENTITY.source,     // argumento | entorno | guardado | automatico
+
+        // clave compartida para que nadie ajeno se meta en el cluster
+        key: process.env.CLUSTER_KEY || "distribuidos",
+        direct: process.env.DIRECT_URL ? splitUrls(process.env.DIRECT_URL) : lanUrls(PORT),
+
+        // bully: manda el ID MAYOR que siga vivo. La URL propia tiene que ser
+        // la misma que los demas usan en su PEERS.
+        publicUrl: (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/+$/, ""),
+        peers: PEERS,
+        algorithm: process.env.ELECTION_ALGO || "bully",
+        timing: process.env.ELECTION_TIMING === "lan" ? "lan" : "wan"   // lan = todo en la misma maquina
+    }
 }
+
+const motor = engine                       // el motor de eleccion
+const electionRoutes = require("./election/routes")
 
 const STARTED_AT = Date.now()
 
-// ----------------------------------------------------------------------------
-// NGROK: la URL publica se detecta sola
-// ----------------------------------------------------------------------------
-// Cuando la peticion llega por un tunel (ngrok, cloudflare, un proxy), esta
-// trae las cabeceras x-forwarded-*. De ahi sacamos la URL publica real, sin
-// que haya que configurar nada al encender el tunel. PUBLIC_URL sigue
-// sirviendo como valor fijo si se prefiere.
 
 let tunnelUrl = null
 
@@ -65,6 +159,9 @@ function detectPublicUrl(req) {
         if (url !== tunnelUrl) {
             tunnelUrl = url
             log("success", "tunnel-detected", { publicUrl: url })
+            // Esa URL es por donde los companeros pueden contestar: si no la
+            // adoptamos, nos anunciamos como localhost y nadie nos alcanza.
+            if (!config.publicUrl && config.election.enabled) engine.setUrl(url)
         }
         return url
     }
@@ -144,15 +241,29 @@ app.use(express.json())
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*")
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-server-token, x-admin-key, ngrok-skip-browser-warning")
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-server-token, x-admin-key, x-worker, ngrok-skip-browser-warning")
+    // El panel abierto por ngrok le habla al coordinador de SU PC en
+    // localhost; Chrome pide este permiso para dejar pasar esa peticion
+    if (req.get("access-control-request-private-network")) {
+        res.setHeader("Access-Control-Allow-Private-Network", "true")
+    }
     if (req.method === "OPTIONS") return res.sendStatus(204)
     next()
 })
 
 // Traza de todas las peticiones (observabilidad)
 app.use((req, res, next) => {
+    // Lo que llega por ngrok trae la URL publica de este server: asi un
+    // companero que se conecta por internet ya nos la ensena
+    if (req.get("x-forwarded-host")) detectPublicUrl(req)
+
     if (req.path === "/events") return next() // el stream no se loguea en cada tick
+    // El protocolo de eleccion contesta 503 mientras el nodo esta pausado, y
+    // los hijos reciben 409 al hablarle a quien no es lider: es lo esperado.
+    if (/^\/(election|debug|relay|cluster)/.test(req.path)) return next()
     res.on("finish", () => {
+        if (res.statusCode === 409 && res.locals.notLeader) return
+        if (res.statusCode === 503 && res.locals.notLeader) return
         if (res.statusCode >= 400) {
             log("warn", "http", { method: req.method, path: req.originalUrl, status: res.statusCode })
         }
@@ -171,6 +282,59 @@ app.use((err, req, res, next) => {
 })
 
 // ============================================================================
+// 7. ELECCION DE LIDER - protocolo entre servers, fallos simulados, /cluster
+// ============================================================================
+// El panel de la eleccion esta en /election.html
+
+if (config.election.enabled) {
+    app.use(electionRoutes)
+}
+
+// La vista del cluster que se le adjunta al hijo en cada respuesta. Gracias a
+// esto el hijo no necesita configuracion: aprende solo a quien preguntar
+// cuando su server desaparezca.
+function clusterView() {
+    if (!config.election.enabled) return {}
+
+    return {
+        leader: engine.leaderUrl(),
+        leaderId: engine.state.leader,
+        peers: [...engine.peerUrls(), engine.state.url]
+    }
+}
+
+// Lo que dicen los HIJOS (registro, pulsos, mensajes) solo lo atiende el
+// lider. Si llega a otro server, se le dice al hijo quien manda ahora y este
+// se redirige. Las lecturas y el panel funcionan en cualquier server.
+function rejectIfNotLeader(req, res) {
+    if (!config.election.enabled) return false
+
+    // Nodo congelado: si siguiera atendiendo, un lider "muerto" retendria a
+    // sus hijos para siempre y el failover no se veria nunca. No se dice quien
+    // es el lider: su idea de quien manda se quedo congelada tambien.
+    if (faults.state.paused) {
+        res.locals.notLeader = true
+        res.status(503).json({ error: "Server fuera de servicio", retry: true, peers: engine.peerUrls() })
+        return true
+    }
+
+    if (engine.isLeader()) return false
+
+    res.locals.notLeader = true
+    const leader = engine.leaderUrl()
+
+    // Todavia no hay lider: eleccion en curso. Que el hijo reintente.
+    if (!leader) {
+        res.status(503).json({ error: "Eleccion en curso, todavia no hay lider", retry: true, ...clusterView() })
+        return true
+    }
+
+    res.status(409).json({ error: "No soy el lider", ...clusterView() })
+    return true
+}
+
+
+// ============================================================================
 // 4. SERVICIO DE NOMBRES - registro robusto
 // ============================================================================
 // registry: clave = nombre normalizado (minusculas) -> entrada
@@ -183,7 +347,7 @@ app.use((err, req, res, next) => {
 
 const registry = new Map()
 
-const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{1,39}$/
+const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,39}$/
 const RESERVED = new Set(["admin", "all", "broadcast", "middleware", "server", "null", "undefined", "api"])
 
 function normalize(name) {
@@ -194,7 +358,7 @@ function validateName(name) {
     const raw = String(name || "").trim()
     if (!raw) return { ok: false, error: "El nombre es obligatorio" }
     if (!NAME_RE.test(raw)) {
-        return { ok: false, error: "Nombre invalido: use 2-40 caracteres [a-zA-Z0-9._-] y empiece con letra o numero" }
+        return { ok: false, error: "Nombre invalido: use 1-40 caracteres [a-zA-Z0-9._-] y empiece con letra o numero" }
     }
     if (RESERVED.has(normalize(raw))) {
         return { ok: false, error: `El nombre '${raw}' esta reservado` }
@@ -280,6 +444,10 @@ function publicEntry(entry, now = Date.now()) {
 
 // Registro / re-registro de un hijo
 app.post("/register", (req, res) => {
+    // Antes de cualquier cosa: ¿mando yo? Un follower no valida nada, solo
+    // contesta 409 con la url del lider para que el hijo se vaya para alla.
+    if (rejectIfNotLeader(req, res)) return
+
     const { name, url, host, force } = req.body || {}
 
     const n = validateName(name)
@@ -327,7 +495,8 @@ app.post("/register", (req, res) => {
             name: existing.display,
             token: existing.token,
             timeout: config.timeout,
-            suggestedPulseMs: Math.floor(config.timeout / 3)
+            suggestedPulseMs: Math.floor(config.timeout / 3),
+            ...clusterView()
         })
     }
 
@@ -359,7 +528,8 @@ app.post("/register", (req, res) => {
         name: entry.display,
         token: entry.token,
         timeout: config.timeout,
-        suggestedPulseMs: Math.floor(config.timeout / 3)
+        suggestedPulseMs: Math.floor(config.timeout / 3),
+        ...clusterView()
     })
 })
 
@@ -379,6 +549,8 @@ app.delete("/unregister/:name", (req, res) => {
 // ============================================================================
 
 function handlePulse(req, res) {
+    if (rejectIfNotLeader(req, res)) return
+
     const key = normalize(req.params.name)
     const entry = registry.get(key)
 
@@ -387,27 +559,36 @@ function handlePulse(req, res) {
         log("warn", "pulse-unknown", { name: req.params.name })
         return res.status(404).json({
             error: "server not registered",
-            action: "re-register"
+            action: "re-register",
+            ...clusterView()
         })
     }
 
+    applyPulse(entry)
+
+    res.json({
+        message: "pulse received",
+        name: entry.display,
+        nextPulseMs: Math.floor(config.timeout / 3),
+        ...clusterView()
+    })
+}
+
+function applyPulse(entry, ageMs = 0) {
     const now = Date.now()
+    const at = now - ageMs
+    if (at <= entry.lastPulse) return   // ya teniamos uno mas reciente
+
     if (entry.status !== "ALIVE") {
         log("success", "recovered", { name: entry.display, downMs: now - entry.lastPulse })
     }
 
-    entry.lastPulse = now
+    entry.lastPulse = at
     entry.status = "ALIVE"
     entry.missed = 0
     entry.deadAt = null
     entry.pulses++
     metrics.pulses++
-
-    res.json({
-        message: "pulse received",
-        name: entry.display,
-        nextPulseMs: Math.floor(config.timeout / 3)
-    })
 }
 
 app.post("/pulse/:name", handlePulse)
@@ -420,9 +601,20 @@ app.post("/heartbeat/:name", handlePulse) // alias historico
 let messageSeq = 0
 const messageLog = []   // historial global (ultimos 300)
 
-function recordMessage(msg) {
+// Indice por uid: sirve para no guardar dos veces un mensaje que ya estaba.
+const messageIndex = new Map()   // uid -> mensaje del historial
+
+function pushToLog(msg) {
     messageLog.push(msg)
-    if (messageLog.length > 300) messageLog.shift()
+    if (msg.uid) messageIndex.set(msg.uid, msg)
+    if (messageLog.length > 300) {
+        const old = messageLog.shift()
+        if (old.uid) messageIndex.delete(old.uid)
+    }
+}
+
+function recordMessage(msg) {
+    pushToLog(msg)
 
     // Se cuelga tambien del emisor, si es un nodo registrado, para poder
     // mostrar en el panel que esta enviando cada quien. Si el mensaje viene
@@ -438,12 +630,16 @@ function recordMessage(msg) {
 
 // hijo -> padre
 app.post("/send-message/:name", (req, res) => {
-    const entry = registry.get(normalize(req.params.name))
+    // Antes de cualquier cosa: los mensajes dirigidos a un hijo los atiende
+    // el lider. Al que no manda le toca decir quien es y redirigir.
+    if (rejectIfNotLeader(req, res)) return
 
     const text = req.body?.message
     if (typeof text !== "string" || !text.trim()) {
         return res.status(400).json({ error: "El campo 'message' es obligatorio" })
     }
+
+    const entry = registry.get(normalize(req.params.name))
 
     // Quien no esta registrado tambien puede escribir. Varios equipos mandan
     // el emisor en la ruta (POST /send-message/pepe con { message }) sin darse
@@ -1033,6 +1229,101 @@ app.get("/messages/:name", (req, res) => {
 })
 
 // ============================================================================
+// 8. IDENTIDAD - como se llama el coordinador de esta PC
+// ============================================================================
+// La letra se elige al arrancar el server (o desde el panel abierto en esta
+// misma PC). No se le pregunta nada a quien abre el panel.
+
+// Por donde llego: a traves del tunel (ngrok) o directo
+function accessVia(req) {
+    return req.get("x-forwarded-for") || req.get("x-forwarded-host") ? "ngrok" : "local"
+}
+
+// Peticion hecha en ESTA PC (panel en localhost, sin pasar por ngrok)
+// El navegador puede estar mostrando el panel local o el de ngrok: en ambos
+// casos la peticion va directo al coordinador de esta PC. Otras paginas web
+// no pueden renombrarlo.
+function isLocalRequest(req) {
+    const addr = (req.socket.remoteAddress || "").replace(/^::ffff:/, "")
+    const host = (req.get("host") || "").replace(/:\d+$/, "")
+    const local = ["127.0.0.1", "::1"].includes(addr) &&
+        ["localhost", "127.0.0.1", "[::1]"].includes(host) &&
+        accessVia(req) === "local"
+    return local && trustedOrigin(req.get("origin"))
+}
+
+function trustedOrigin(origin) {
+    if (!origin) return true   // la misma pagina (o curl)
+    let parsed
+    try { parsed = new URL(origin) } catch { return false }
+    if (["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)) return true
+    const shared = [config.publicUrl, tunnelUrl]
+        .filter(Boolean)
+        .map(url => { try { return new URL(url).origin } catch { return null } })
+    return shared.includes(parsed.origin)
+}
+
+// ----------------------------------------------------------------------------
+// Nombre del coordinador de esta PC (solo desde el panel en localhost)
+// ----------------------------------------------------------------------------
+
+function nodeIdentityInfo(req) {
+    const local = isLocalRequest(req)
+    const fixed = ["argumento", "entorno"].includes(config.election.idSource)
+    return {
+        id: config.election.id,
+        source: config.election.idSource,
+        custom: config.election.idSource !== "automatico",
+        mode: config.election.mode,
+        host: HOST_INFO.hostname,
+        port: config.port,
+        local,
+        // Se puede renombrar en los dos modos. En bully la letra decide
+        // quien manda, asi que poder elegirla es justo lo interesante.
+        canRename: local && !fixed
+    }
+}
+
+app.get("/node/identity", (req, res) => {
+    res.json(nodeIdentityInfo(req))
+})
+
+app.post("/node/identity", (req, res) => {
+    const info = nodeIdentityInfo(req)
+
+    if (!info.local) {
+        return res.status(403).json({ error: "El nombre del coordinador solo se cambia desde el panel en localhost de su PC" })
+    }
+    if (!info.canRename) {
+        return res.status(400).json({ error: `El nombre se fijo al arrancar (${config.election.idSource}); quitalo para poder cambiarlo aqui` })
+    }
+
+    const n = validateName(enMayuscula(req.body?.id))
+    if (!n.ok) return res.status(400).json({ error: n.error })
+
+    const takenIds = engine.snapshot().peers.map(p => p.id).filter(Boolean)
+
+    if (n.display !== config.election.id && takenIds.some(id => normalize(id) === n.key)) {
+        return res.status(409).json({ error: `Ya hay otro coordinador llamado '${n.display}' en el cluster` })
+    }
+
+    try {
+        fs.writeFileSync(ID_FILE, JSON.stringify({ id: n.display, savedAt: new Date().toISOString() }, null, 2))
+    } catch (error) {
+        return res.status(500).json({ error: `No se pudo guardar el nombre: ${error.message}` })
+    }
+
+    const previous = config.election.id
+    config.election.id = n.display
+    config.election.idSource = "guardado"
+    engine.rename(n.display)
+
+
+    log("success", "node-renamed", { from: previous, to: n.display })
+    res.json({ ok: true, ...nodeIdentityInfo(req) })
+})
+
+// ============================================================================
 // CONFIGURACION DEL SERVER (solo lectura)
 // ============================================================================
 
@@ -1260,16 +1551,42 @@ app.get("/api/status", (req, res) => {
             dashboards: sseClients.size
         },
         metrics,
+        election: electionSummary(),
         servers
     })
 })
+
+function electionSummary() {
+    if (!config.election.enabled) return { enabled: false }
+
+    return {
+        enabled: true,
+        mode: config.election.mode,
+        id: motor.state.id,
+        role: motor.state.role,
+        leader: motor.state.leader,
+        leaderUrl: engine.state.leaderUrl,
+        term: motor.state.term,
+        paused: faults.state.paused,
+        peers: motor.snapshot().peers
+    }
+}
 
 app.get("/metrics", (req, res) => {
     res.json({ uptimeMs: Date.now() - STARTED_AT, servers: registry.size, ...metrics })
 })
 
 app.get("/health", (req, res) => {
-    res.json({ status: "ok", role: "server", uptimeMs: Date.now() - STARTED_AT, host: HOST_INFO })
+    res.json({
+        status: "ok",
+        role: "server",
+        id: config.election.id,
+        electionMode: config.election.mode,
+        electionRole: config.election.enabled ? motor.state.role : null,
+        leader: config.election.enabled ? motor.state.leader : null,
+        uptimeMs: Date.now() - STARTED_AT,
+        host: HOST_INFO
+    })
 })
 
 app.get("/logs", (req, res) => {
@@ -1304,8 +1621,12 @@ app.get("/events", (req, res) => {
 // 5. TIMEOUT - deteccion pasiva (pulsos perdidos) + purga de muertos
 // ============================================================================
 
+const vigila = () => true
+
 setInterval(() => {
+    if (!vigila()) return
     const now = Date.now()
+
 
     for (const entry of [...registry.values()]) {
         const status = computeStatus(entry, now)
@@ -1346,6 +1667,7 @@ setInterval(() => {
 // ============================================================================
 
 setInterval(async () => {
+    if (!vigila()) return
     for (const entry of [...registry.values()]) {
         const t0 = Date.now()
         try {
@@ -1373,7 +1695,77 @@ setInterval(async () => {
 // ARRANQUE
 // ============================================================================
 
-app.listen(config.port, config.host, () => {
+// ----------------------------------------------------------------------------
+// Elegir la letra al encender
+// ----------------------------------------------------------------------------
+// En bully el nombre ES la identidad que decide quien manda, asi que lo suyo
+// es escogerlo al arrancar en vez de quedarse con el nombre de la maquina.
+//
+// Solo se pregunta si hay una persona delante. Cuando el server lo lanza
+// scripts/cluster.js (o un servicio, o Docker) stdin no es una terminal: ahi
+// se sigue de largo con el nombre de siempre, porque si no el proceso se
+// quedaria esperando una respuesta que nunca llega.
+
+function letraSugerida() {
+    return enMayuscula(savedNodeId()) || "A"
+}
+
+function preguntarLetra() {
+    return new Promise(resolve => {
+        const fijado = ["argumento", "entorno"].includes(config.election.idSource)
+
+        if (!process.stdin.isTTY) return resolve(null)      // nadie que conteste
+        if (process.env.NO_PREGUNTAR === "1") return resolve(null)
+        if (fijado) return resolve(null)                    // ya lo dijo al arrancar
+        if (!config.election.enabled) return resolve(null)
+
+        const rl = require("readline").createInterface({ input: process.stdin, output: process.stdout })
+        const sugerida = letraSugerida()
+
+        console.log("")
+        console.log("  ¿Con que letra quieres que entre este server?")
+        console.log("  Manda la letra mas alta del grupo (A < B < ... < Z).")
+        console.log("  Enter para dejar la que aparece entre corchetes.")
+        console.log("")
+
+        const pedir = () => {
+            rl.question("  Letra [" + sugerida + "]: ", respuesta => {
+                const elegida = enMayuscula(respuesta) || sugerida
+                const n = validateName(elegida)
+
+                if (!n.ok) {
+                    console.log("  " + n.error)
+                    return pedir()
+                }
+
+                rl.close()
+                resolve(n.display)
+            })
+        }
+
+        pedir()
+    })
+}
+
+function arrancarServer() {
+
+app.listen(config.port, config.host, error => {
+    // Express 5 llama aqui tambien cuando NO pudo escuchar (p. ej. el puerto
+    // ya lo usa otro server). Sin esto el proceso seguia vivo sin atender nada.
+    if (error) {
+        console.error("")
+        console.error(error.code === "EADDRINUSE"
+            ? `  El puerto ${config.port} ya esta en uso: hay otro server corriendo.`
+            : `  No se pudo arrancar en el puerto ${config.port}: ${error.message}`)
+        if (error.code === "EADDRINUSE") {
+            console.error("  Cierralo primero. En PowerShell, para ver quien lo usa:")
+            console.error(`    Get-NetTCPConnection -LocalPort ${config.port} -State Listen | Select-Object OwningProcess`)
+            console.error("  y para cerrarlo:  Stop-Process -Id <OwningProcess>")
+        }
+        console.error("")
+        process.exit(1)
+    }
+
     const nets = os.networkInterfaces()
     const lan = Object.values(nets).flat().filter(i => i && i.family === "IPv4" && !i.internal).map(i => i.address)
 
@@ -1384,10 +1776,84 @@ app.listen(config.port, config.host, () => {
     if (config.publicUrl) console.log(` Publica   : ${config.publicUrl}`)
     console.log(` Host      : ${HOST_INFO.hostname} (${HOST_INFO.platform}/${HOST_INFO.arch}) node ${HOST_INFO.node}`)
     console.log(` Timeout   : ${config.timeout} ms   Admin key: ${config.adminKey}`)
+    if (config.election.enabled) {
+        console.log(` Eleccion  : id ${config.election.id} (${config.election.algorithm}) · ${config.election.publicUrl}`)
+        console.log(` Peers     : ${config.election.peers.join(", ") || "ninguno (se aprenden de los pings)"}`)
+        console.log(` Panel     : http://localhost:${config.port}/election.html`)
+    } else {
+        console.log(" Eleccion  : desactivada (ELECTION=off), server unico")
+    }
     console.log("========================================================")
 
-    log("success", "server-up", { port: config.port, host: HOST_INFO.hostname, lan })
+    log("success", "server-up", { port: config.port, host: HOST_INFO.hostname, lan, id: config.election.id })
+
+    if (config.election.enabled) startElection()
 })
+
+}
+
+preguntarLetra().then(letra => {
+    if (letra && letra !== config.election.id) {
+        config.election.id = letra
+        config.election.idSource = "elegido"
+
+        // Queda guardada para el proximo arranque: la proxima vez sale
+        // sugerida entre corchetes y basta con dar Enter.
+        try {
+            fs.writeFileSync(ID_FILE, JSON.stringify({ id: letra, savedAt: new Date().toISOString() }, null, 2))
+        } catch { /* si no se puede guardar, se sigue igual */ }
+    }
+
+    arrancarServer()
+})
+
+// ============================================================================
+// 7. ELECCION DE LIDER - arranque del motor
+// ============================================================================
+
+function startElection() {
+    // Lo que cuenta el motor aparece tambien en el registro de eventos del panel
+    const levels = { INFO: "info", WARN: "warn", ERROR: "error" }
+    electionLog.use((level, message) => {
+        const nivel = /^Lider ahora/.test(message) ? "success" : (levels[level] || "info")
+        log(nivel, "election", { message })
+    })
+
+    engine.init(
+        {
+            id: config.election.id,
+            publicUrl: config.election.publicUrl,
+            peers: config.election.peers,
+            algorithm: config.election.algorithm,
+            timing: config.election.timing
+        },
+        {
+            dataVersion: () => registry.size + messageLog.length,
+
+            // Los hijos registrados aqui viajan en la foto del server, para que
+            // el panel ensene a que server esta enganchado cada hijo.
+            workers: () => [...registry.values()].map(e => ({ name: e.display, online: e.status === "ALIVE" })),
+
+            // EL REGISTRO DE WORKERS ES DEL LIDER.
+            //
+            // Al dejar de mandar hay que soltarlo: los hijos se van a registrar
+            // con el nuevo lider en su proximo pulso, y si este se quedara con
+            // la lista vieja el mismo worker figuraria en dos coordinadores a la
+            // vez (DEAD aqui, ALIVE alla). No se pierde nada: si vuelve a mandar,
+            // los hijos se re-registran solos.
+            onRole: (ahora, antes) => {
+                if (antes !== "leader" || ahora === "leader") return
+                if (!registry.size) return
+
+                const sueltos = [...registry.values()].map(e => e.display)
+                registry.clear()
+                log("warn", "workers-released", { count: sueltos.length, workers: sueltos, reason: "ya no soy el lider" })
+            }
+        }
+    )
+
+    engine.start()
+}
 
 // Al cerrar el server se apagan los hijos que el mismo lanzo (sin huerfanos)
 let closing = false
@@ -1395,6 +1861,9 @@ let closing = false
 function shutdownChildren(signal) {
     if (closing) return
     closing = true
+
+    motor.stop()
+
 
     const names = [...serverProcesses.values()].map(p => p.name)
     if (names.length) console.log(`\nApagando ${names.length} miniserver(s): ${names.join(", ")}`)

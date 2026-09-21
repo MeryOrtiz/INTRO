@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Eleccion de lider</title>
+    <link rel="stylesheet" href="election.css" />
+</head>
+<body>
+    <header>
+        <div class="title">
+            <h1>Eleccion de lider</h1>
+            <span id="clusterMeta" class="meta"></span>
+            <a href="/" class="meta">← panel del server</a>
+        </div>
+        <div id="banner" class="banner">Conectando...</div>
+    </header>
+
+    <section class="counters">
+        <div class="counter">
+            <strong id="msgProtocol">0</strong>
+            <span>mensajes del algoritmo</span>
+        </div>
+        <div class="counter dim">
+            <strong id="msgPing">0</strong>
+            <span>pings del detector</span>
+        </div>
+        <div class="counter">
+            <strong id="msgTypes">-</strong>
+            <span>por tipo</span>
+        </div>
+        <button id="resetCounters" class="ghost">Poner a cero</button>
+    </section>
+
+    <main>
+        <div id="nodes" class="nodes"></div>
+
+    </main>
+
+    <section class="connect" id="connectBox" hidden>
+        <div class="tool">
+            <span class="label">Conectar con compañeros por internet</span>
+            <p class="hint">
+                Tu URL: <code id="myUrl">detectando…</code>
+                <button id="copyUrl" class="ghost small" type="button">Copiar</button>
+            </p>
+            <form id="peerForm" class="row">
+                <input id="peerUrl" type="url" placeholder="https://su-url.ngrok-free.dev" required />
+                <button type="submit">Conectar</button>
+            </form>
+            <p id="peerResult" class="hint"></p>
+            <ul id="peerList" class="peer-list"></ul>
+        </div>
+    </section>
+
+    <section class="tools">
+        <div class="tool">
+            <span class="label">Particion de red</span>
+            <p class="hint">Marca los nodos de un lado. El resto queda incomunicado de ellos.</p>
+            <div id="partitionPicker" class="picker"></div>
+            <div class="row">
+                <button id="applyPartition">Partir la red</button>
+                <button id="healNetwork" class="ghost">Sanar</button>
+            </div>
+        </div>
+
+        <div class="tool">
+            <span class="label">Red degradada</span>
+            <p class="hint">Se aplica a todos los nodos a la vez.</p>
+            <div class="row">
+                <label>Latencia <input id="latency" type="number" value="0" min="0" step="100" /> ms</label>
+                <label>Perdida <input id="drop" type="number" value="0" min="0" max="100" step="10" /> %</label>
+                <button id="applyNetwork">Aplicar</button>
+            </div>
+        </div>
+    </section>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <script src="election.js"></script>
+</body>
+</html>

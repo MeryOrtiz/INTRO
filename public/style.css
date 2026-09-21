@@ -177,6 +177,7 @@ h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
   font-size: 11px; font-weight: 600; letter-spacing: .02em;
   border: 1px solid transparent; white-space: nowrap;
 }
+a.pill { text-decoration: none; }
 .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
 
 .pill-alive   { background: var(--ok-soft);   color: var(--ok);   border-color: color-mix(in srgb, var(--ok) 25%, transparent); }
@@ -190,6 +191,10 @@ h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
   70%      { box-shadow: 0 0 0 6px transparent; }
 }
+
+/* ----------------------------------------------------------------- personas */
+
+button.pill { cursor: pointer; font-family: inherit; }
 
 /* --------------------------------------------------------------- conectados */
 

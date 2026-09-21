@@ -100,6 +100,17 @@ function renderHeader(status) {
     ` · ${mw.host.hostname} (${mw.host.platform}/${mw.host.arch})` +
     ` · activo ${fmtDur(mw.uptimeMs)} · timeout ${mw.timeout / 1000}s`
 
+  // Eleccion de lider: que papel tiene este server y quien manda
+  const e = status.election || {}
+  const link = el("election-link")
+  if (!e.enabled) {
+    link.hidden = true
+  } else {
+    const papel = e.paused ? "pausado" : e.role === "leader" ? "líder" : e.role === "candidate" ? "en elección" : "seguidor"
+    link.textContent = `${e.id} · ${papel}${e.role !== "leader" && e.leader ? ` · manda ${e.leader}` : ""}`
+    link.className = `pill ${e.paused ? "pill-dead" : e.role === "leader" ? "pill-alive" : "pill-idle"}`
+  }
+
   const c = status.counts
   el("kpis").innerHTML = [
     ["i-ok", "●", c.alive, "en línea"],
@@ -160,6 +171,9 @@ function renderConnected(list) {
     </li>`
   }).join("")
 }
+
+// ---------------------------------------------------------------- personas
+
 
 // ---------------------------------------------------------------- mensajes
 

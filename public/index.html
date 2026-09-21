@@ -18,6 +18,8 @@
     </div>
 
     <div class="topbar-actions">
+      <button id="me" class="pill pill-idle" type="button">Identificarse</button>
+      <a id="election-link" class="pill pill-idle" href="/election.html" title="Panel de elección de líder">elección…</a>
       <span id="stream-state" class="pill pill-idle"><i class="dot"></i>conectando</span>
       <button id="theme-toggle" class="icon-btn" title="Cambiar tema">◐</button>
     </div>
@@ -75,6 +77,7 @@
         <p class="help">Pega la URL de tu compañero y le llega el cuerpo que todos aceptamos: <code>{ "name", "message" }</code>. Si la URL no lleva ruta, se busca sola: primero <code>/send-message/tu-nombre</code> (lo que usa la mayoría en clase), luego <code>/inbox</code>, <code>/mensajes</code> y demás, y si el destino es una página web se lee su JavaScript para averiguar dónde escucha. Si ya sabes la ruta, escríbela y se usa esa: <code>https://su-url.ngrok-free.dev/mensajes</code>. El botón <b>Probar</b> te dice qué hay en la URL antes de enviar.</p>
       </section>
 
+      <!-- PERSONAS QUE ABRIERON EL PANEL -->
       <!-- FLUJO DE MENSAJES -->
       <section class="card col-full">
         <div class="card-head">
