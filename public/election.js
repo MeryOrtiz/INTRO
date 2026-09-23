@@ -17,13 +17,26 @@ function escapeHtml(text) {
 // Todas las ordenes a otros nodos van por el relay del coordinador local:
 // asi el panel nunca hace peticiones cruzadas y funciona igual por ngrok.
 async function control(url, path, body) {
-    const res = await fetch("/relay", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, path, body: body || {} })
-    })
+    // A UNO MISMO SE LE HABLA DIRECTO.
+    //
+    // Pasar por /relay significaria que el server se hace una peticion a su
+    // propia URL de ngrok: sale a internet y vuelve (medio segundo largo). Al
+    // matarse, para cuando la respuesta regresa el proceso ya no esta, y la
+    // orden parecia fallar aunque hubiera funcionado.
+    const yo = lastCluster && lastCluster.nodes ? lastCluster.nodes.find(n => n.self) : null
+    const esYo = Boolean(yo && yo.url === url)
 
-    return res.json()
+    const peticion = esYo
+        ? [path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }]
+        : ["/relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, path, body: body || {} }) }]
+
+    try {
+        const res = await fetch(peticion[0], peticion[1])
+        return await res.json()
+    } catch {
+        // Matarse corta la conexion a media respuesta: es justo lo que se pidio.
+        return { ok: true, muriendo: true }
+    }
 }
 
 function allNodes() {
@@ -129,6 +142,19 @@ function insigniaRol(node, liderAcordado) {
     return `<span class="role gone" title="${escapeHtml(ROLES.follower.que)}">COORDINADOR</span>`
 }
 
+// Matar apaga el proceso de verdad y solo se levanta desde la terminal, asi
+// que se pide confirmacion: el primer clic arma el boton, el segundo mata.
+//
+// El estado vive aqui fuera y no dentro de la tarjeta porque el panel se
+// repinta entero cada segundo: guardado en el boton, se perderia enseguida.
+const CONFIRMAR_MS = 6000
+
+let matarPendiente = null   // { url, hasta }
+
+function esperandoConfirmacion(url) {
+    return Boolean(matarPendiente && matarPendiente.url === url && Date.now() < matarPendiente.hasta)
+}
+
 function renderNodes(cluster) {
     nodesEl.innerHTML = ""
 
@@ -148,16 +174,11 @@ function renderNodes(cluster) {
         // los datos son los ultimos que se le conocieron, no los de ahora, y
         // eso se dice sin rodeos en vez de dejar la tarjeta medio vacia.
         if (!node.reachable) {
-            const rolPrevio = (cluster.agreedLeader && String(node.id) === String(cluster.agreedLeader))
-                ? "leader"
-                : node.lastRole
-
             card.innerHTML = `
                 <div class="node-head">
                     <strong>${escapeHtml(node.id ? mayus(node.id) : node.url)}</strong>
                     ${insigniaRol(node, cluster.agreedLeader)}
                 </div>
-                ${rolPrevio ? `<div class="role-what">${escapeHtml(rolInfo(rolPrevio).que)}</div>` : ""}
                 <div class="node-body">
                     lider: <code>${escapeHtml(node.lastLeader ? mayus(node.lastLeader) : "ninguno")}</code>
                     ${node.lastTerm ? `<br />term: <code>${escapeHtml(node.lastTerm)}</code>` : ""}
@@ -185,7 +206,6 @@ function renderNodes(cluster) {
                 <strong>${escapeHtml(mayus(node.id))}</strong>
                 ${insigniaRol(node, cluster.agreedLeader)}
             </div>
-            <div class="role-what">${escapeHtml(rolInfo(node.role).que)}</div>
             <div class="node-flags">${flags.join("")}</div>
             <div class="node-body">
                 lider: <code>${escapeHtml(node.leader ? mayus(node.leader) : "ninguno")}</code>
@@ -194,10 +214,11 @@ function renderNodes(cluster) {
             </div>
             ${renderWorkers(node, faults)}
             <div class="node-actions">
-                <button class="${faults.paused ? "" : "danger"}" data-action="${faults.paused ? "resume" : "pause"}" data-url="${escapeHtml(node.url)}">
-                    ${faults.paused ? "Reanudar" : "Matar"}
-                </button>
-                <button class="ghost" data-action="heal" data-url="${escapeHtml(node.url)}">Sanar</button>
+                ${esperandoConfirmacion(node.url)
+                    ? `<button class="danger confirmar" data-action="kill" data-url="${escapeHtml(node.url)}">Confirmar</button>
+                       <button class="ghost" data-action="cancelar" data-url="${escapeHtml(node.url)}">Cancelar</button>`
+                    : `<button class="danger" data-action="kill" data-url="${escapeHtml(node.url)}">Matar</button>
+                       <button class="ghost" data-action="heal" data-url="${escapeHtml(node.url)}">Sanar</button>`}
             </div>`
 
         nodesEl.appendChild(card)
@@ -205,17 +226,34 @@ function renderNodes(cluster) {
 
     nodesEl.querySelectorAll("button[data-action]").forEach(button => {
         button.onclick = async () => {
-            button.disabled = true
+            const url = button.dataset.url
+            const accion = button.dataset.action
+            const target = cluster.nodes.find(node => node.url === url)
+            const nombre = target && target.id ? target.id : url
 
-            const target = cluster.nodes.find(node => node.url === button.dataset.url)
-
-            // Matar a un follower no dispara nada, y sin este aviso parece que
-            // el panel se ha colgado. La eleccion solo salta si cae EL LIDER.
-            if (button.dataset.action === "pause" && target && target.role !== "leader") {
-                note(`${target.id} no era el lider: no habra eleccion. Mata al lider para ver el failover.`)
+            if (accion === "cancelar") {
+                matarPendiente = null
+                refresh()
+                return
             }
 
-            await control(button.dataset.url, `/debug/${button.dataset.action}`)
+            // Primer clic en Matar: no mata, arma la confirmacion.
+            if (accion === "kill" && !esperandoConfirmacion(url)) {
+                matarPendiente = { url, hasta: Date.now() + CONFIRMAR_MS }
+
+                note(target && target.role !== "leader"
+                    ? `${nombre} no es el lider: matarlo no dispara eleccion. Pulsa Confirmar si aun asi quieres apagarlo.`
+                    : `Vas a APAGAR ${nombre}. Solo se vuelve a levantar desde la terminal. Pulsa Confirmar.`)
+
+                refresh()
+                setTimeout(refresh, CONFIRMAR_MS + 200)   // devuelve el boton a su sitio solo
+                return
+            }
+
+            button.disabled = true
+            if (accion === "kill") matarPendiente = null
+
+            await control(url, `/debug/${accion}`)
             refresh()
         }
     })

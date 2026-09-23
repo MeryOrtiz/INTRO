@@ -1858,6 +1858,10 @@ function startElection() {
 // Al cerrar el server se apagan los hijos que el mismo lanzo (sin huerfanos)
 let closing = false
 
+// ...salvo cuando la muerte viene del boton "Matar" del panel: ahi la gracia
+// es justo que los hijos SOBREVIVAN, para verlos buscarse otro coordinador.
+let matarHijosAlSalir = true
+
 function shutdownChildren(signal) {
     if (closing) return
     closing = true
@@ -1876,9 +1880,32 @@ function shutdownChildren(signal) {
     if (signal) console.log(`Server detenido (${signal})`)
 }
 
+// MUERTE DE VERDAD desde el panel.
+//
+// El boton "Matar" ya no congela el nodo: apaga el proceso. No se puede
+// revivir desde la interfaz -- hay que volver a arrancarlo en la terminal,
+// que es lo que pasaria con una maquina que se cae de verdad.
+//
+// Los miniservers que este server lanzo se quedan vivos a proposito: sin
+// ellos no se ve lo interesante, que es como se registran solos en el
+// coordinador que tome el mando.
+app.post("/debug/kill", (req, res) => {
+    log("warn", "kill", { by: "panel", note: "reinicialo desde la terminal: node server.js" })
+
+    res.json({ ok: true, message: "Server apagado. Reinicialo desde la terminal." })
+
+    // un respiro para que la respuesta salga antes de cortar
+    setTimeout(() => {
+        matarHijosAlSalir = false
+        console.log("\n  Matado desde el panel. Para levantarlo: node server.js\n")
+        process.exit(0)
+    }, 200)
+})
+
 process.on("SIGINT", () => shutdownChildren("SIGINT"))
 process.on("SIGTERM", () => shutdownChildren("SIGTERM"))
 process.on("exit", () => {
+    if (!matarHijosAlSalir) return
     for (const proc of serverProcesses.values()) {
         try { proc.child.kill() } catch { /* ya termino */ }
     }
